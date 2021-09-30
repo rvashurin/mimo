@@ -1,0 +1,9 @@
+numpy
+tensorflow
+tensorflow-datasets
+absl-py
+uncertainty-metrics
+tensorflow-probability
+git+https://github.com/google-research/robustness_metrics.git#egg=robustness_metrics
+git+https://github.com/google/uncertainty-baselines.git#egg=uncertainty_baselines
+edward2
