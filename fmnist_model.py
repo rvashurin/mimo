@@ -25,7 +25,7 @@ BatchNormalization = functools.partial(  # pylint: disable=invalid-name
     momentum=0.9)
 Conv2D = functools.partial(  # pylint: disable=invalid-name
     tf.keras.layers.Conv2D,
-    kernel_size=3,
+    kernel_size=7,
     padding='same',
     use_bias=False,
     kernel_initializer='he_normal')
@@ -90,7 +90,7 @@ def small_resnet(input_shape, depth, width_multiplier, num_classes,
   x = tf.keras.layers.Reshape(input_shape[1:-1] +
                               [input_shape[-1] * ensemble_size])(x)
   x = Conv2D(16, strides=1)(x)
-  for strides, filters in zip([1, 2, 2], [16, 32, 64]):
+  for strides, filters in zip([1, 3, 1], [16, 32, 64]):
     x = group(
         x,
         filters=filters * width_multiplier,
@@ -107,3 +107,50 @@ def small_resnet(input_shape, depth, width_multiplier, num_classes,
       activation=None,
       ensemble_size=ensemble_size)(x)
   return tf.keras.Model(inputs=inputs, outputs=x)
+
+def simple_resnet(depth, width_multiplier, num_classes):
+  if (depth - 4) % 6 != 0:
+    raise ValueError('depth should be 6n+4 (e.g., 16, 22, 28, 40).')
+  num_blocks = (depth - 4) // 6
+#  input_shape = list(input_shape)
+  inputs = tf.keras.layers.Input(shape=(28, 28, 1))
+#  x = tf.keras.layers.Permute([2, 3, 4, 1])(inputs)
+#  if ensemble_size != input_shape[0]:
+#    raise ValueError('the first dimension of input_shape must be ensemble_size')
+#  x = tf.keras.layers.Reshape(input_shape[1:-1] +
+#                              [input_shape[-1] * ensemble_size])(x)
+  x = Conv2D(16, strides=2)(inputs)
+  for strides, filters in zip([1, 2, 2], [16, 32, 64]):
+    x = group(
+        x,
+        filters=filters * width_multiplier,
+        strides=strides,
+        num_blocks=num_blocks)
+
+  x = BatchNormalization()(x)
+  x = tf.keras.layers.Activation('relu')(x)
+  x = tf.keras.layers.AveragePooling2D(pool_size=6)(x)
+  x = tf.keras.layers.Flatten()(x)
+  x = tf.keras.layers.Dense(num_classes, activation=None)(x)
+
+  return tf.keras.Model(inputs=inputs, outputs=x)
+
+def extremely_simple_net(num_classes):
+    inputs = tf.keras.layers.Input(shape=(28, 28, 1))
+
+    x = tf.keras.layers.Conv2D(filters=32, kernel_size=(5, 5),
+                               strides=(1, 1), padding='same',
+                               data_format='channels_last',
+                               name='conv_1', activation='relu')(inputs)
+    x = tf.keras.layers.MaxPool2D(pool_size=(2, 2), name='pool_1')(x)
+    x = tf.keras.layers.Conv2D(filters=64, kernel_size=(5, 5),
+                               strides=(1, 1), padding='same',
+                               data_format='channels_last',
+                               name='conv_2', activation='relu')(x)
+    x = tf.keras.layers.MaxPool2D(pool_size=(2, 2), name='pool_2')(x)
+    x = tf.keras.layers.Flatten()(x)
+    x = tf.keras.layers.Dense(units=1024, name='fc_1', activation='relu')(x)
+    x = tf.keras.layers.Dropout(rate=0.5)(x)
+    x = tf.keras.layers.Dense(num_classes, activation=None)(x)
+
+    return tf.keras.Model(inputs=inputs, outputs=x)
