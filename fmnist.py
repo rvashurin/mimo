@@ -21,6 +21,7 @@ import time
 from absl import app
 from absl import flags
 from absl import logging
+from tensorflow.keras.preprocessing.image import ImageDataGenerator
 
 import fmnist_model  # local file import
 import robustness_metrics as rm
@@ -39,7 +40,7 @@ flags.DEFINE_integer('batch_repetitions', 1, 'Number of times an example is'
                      'repeated in a training batch. More repetitions lead to'
                      'lower variance gradients and increased training time.')
 flags.DEFINE_integer('seed', 0, 'Random seed.')
-flags.DEFINE_float('base_learning_rate', 0.1,
+flags.DEFINE_float('base_learning_rate', 0.05,
                    'Base learning rate when total training batch size is 128.')
 flags.DEFINE_integer(
     'lr_warmup_epochs', 0,
@@ -108,8 +109,7 @@ def main(argv):
 
   num_classes = ds_info.features['label'].num_classes
 
-  train_dataset = train_dataset.shuffle(buffer_size=50000,
-                                        reshuffle_each_iteration=False).repeat(FLAGS.train_epochs).batch(train_batch_size)
+  train_dataset = train_dataset.shuffle(buffer_size=50000, reshuffle_each_iteration=False).batch(train_batch_size)
   val_dataset = val_dataset.batch(test_batch_size)
   test_dataset = test_dataset.batch(test_batch_size)
 
@@ -129,7 +129,7 @@ def main(argv):
 #        width_multiplier=1,
 #        num_classes=num_classes,
 #        ensemble_size=FLAGS.ensemble_size)
-    model = fmnist_model.simple_resnet(40, 1, num_classes)
+    model = fmnist_model.simple_resnet(16, 1, num_classes)
     logging.info('Model input shape: %s', model.input_shape)
     logging.info('Model output shape: %s', model.output_shape)
     logging.info('Model number of weights: %s', model.count_params())
@@ -172,13 +172,11 @@ def main(argv):
       initial_epoch = optimizer.iterations.numpy() // steps_per_epoch
 
   @tf.function
-  def train_step(iterator):
+  def train_step(images, labels):
     """Training StepFn."""
 
-    def step_fn(inputs):
+    def step_fn(images, labels):
       """Per-Replica StepFn."""
-      images = inputs['image']
-      labels = inputs['label']
       batch_size = tf.shape(images)[0]
 
 #      main_shuffle = tf.random.shuffle(tf.tile(
@@ -229,7 +227,7 @@ def main(argv):
           negative_log_likelihood)
       metrics['train/accuracy'].update_state(flat_labels, probs)
 
-    strategy.run(step_fn, args=((inputs),))
+    strategy.run(step_fn, args=(images, labels))
 
   @tf.function
   def test_step(inputs):
@@ -275,61 +273,65 @@ def main(argv):
   metrics.update({'test/ms_per_example': tf.keras.metrics.Mean()})
 
   start_time = time.time()
-  for current_step, inputs in enumerate(train_dataset):
-    train_step(inputs)
+  datagen = ImageDataGenerator(rotation_range = 10, horizontal_flip = True, zoom_range = 0.1)
 
-    epoch = current_step // steps_per_epoch
-    if current_step % steps_per_epoch == 0.0:
-      logging.info('Starting to run epoch: %s', epoch)
-    max_steps = steps_per_epoch * (FLAGS.train_epochs)
-    time_elapsed = time.time() - start_time
-    steps_per_sec = float(current_step) / time_elapsed
-    eta_seconds = (max_steps - current_step) / steps_per_sec
-    message = ('{:.1%} completion: epoch {:d}/{:d}. {:.1f} steps/s. '
-               'ETA: {:.0f} min. Time elapsed: {:.0f} min'.format(
-                   current_step / max_steps, epoch + 1, FLAGS.train_epochs,
-                   steps_per_sec, eta_seconds / 60, time_elapsed / 60))
-    if current_step % 20 == 0:
-      logging.info(message)
+  for epoch in range(FLAGS.train_epochs):
+    logging.info('Starting to run epoch: %s', epoch)
+    for current_step, inputs in enumerate(train_dataset):
+      image = inputs['image']
+      label = inputs['label']
+      for _image, _label in datagen.flow(image, label, batch_size = train_batch_size):
+          train_step(_image, _label)
+          break
 
-    if current_step % steps_per_epoch == 0:
-      logging.info('Testing on validation dataset')
-      for step, inputs in enumerate(val_dataset):
-        if step % 20 == 0:
-          logging.info('Starting to run eval step %s of epoch: %s', step, epoch)
-        test_start_time = time.time()
-        test_step(inputs)
-        ms_per_example = (time.time() - test_start_time) * 1e6 / test_batch_size
-        metrics['test/ms_per_example'].update_state(ms_per_example)
-      logging.info('Done with testing on validation dataset')
+      max_steps = steps_per_epoch * (FLAGS.train_epochs)
+      time_elapsed = time.time() - start_time
+      steps_per_sec = float(current_step) / time_elapsed
+      eta_seconds = (max_steps - current_step) / steps_per_sec
+      message = ('{:.1%} completion: epoch {:d}/{:d}. {:.1f} steps/s. '
+                 'ETA: {:.0f} min. Time elapsed: {:.0f} min'.format(
+                     current_step / max_steps, epoch + 1, FLAGS.train_epochs,
+                     steps_per_sec, eta_seconds / 60, time_elapsed / 60))
+      if current_step % 20 == 0:
+        logging.info(message)
 
-      logging.info('Train Loss: %.4f, Accuracy: %.2f%%',
-                   metrics['train/loss'].result(),
-                   metrics['train/accuracy'].result() * 100)
-      logging.info('Test NLL: %.4f, Accuracy: %.2f%%',
-                   metrics['test/negative_log_likelihood'].result(),
-                   metrics['test/accuracy'].result() * 100)
-      for i in range(FLAGS.ensemble_size):
-        logging.info(
-            'Member %d Test Loss: %.4f, Accuracy: %.2f%%', i,
-            metrics['test/nll_member_{}'.format(i)].result(),
-            metrics['test/accuracy_member_{}'.format(i)].result() * 100)
+    logging.info('Testing on validation dataset')
+    for step, inputs in enumerate(val_dataset):
+      if step % 20 == 0:
+        logging.info('Starting to run eval step %s of epoch: %s', step, epoch)
+      test_start_time = time.time()
+      test_step(inputs)
+      ms_per_example = (time.time() - test_start_time) * 1e6 / test_batch_size
+      metrics['test/ms_per_example'].update_state(ms_per_example)
+    logging.info('Done with testing on validation dataset')
 
-      total_results = {name: metric.result() for name, metric in metrics.items()}
-      # Results from Robustness Metrics themselves return a dict, so flatten them.
-      total_results = utils.flatten_dictionary(total_results)
-      with summary_writer.as_default():
-        for name, result in total_results.items():
-          tf.summary.scalar(name, result, step=epoch + 1)
+    logging.info('Train Loss: %.4f, Accuracy: %.2f%%',
+                 metrics['train/loss'].result(),
+                 metrics['train/accuracy'].result() * 100)
+    logging.info('Test NLL: %.4f, Accuracy: %.2f%%',
+                 metrics['test/negative_log_likelihood'].result(),
+                 metrics['test/accuracy'].result() * 100)
+    for i in range(FLAGS.ensemble_size):
+      logging.info(
+          'Member %d Test Loss: %.4f, Accuracy: %.2f%%', i,
+          metrics['test/nll_member_{}'.format(i)].result(),
+          metrics['test/accuracy_member_{}'.format(i)].result() * 100)
 
-      for _, metric in metrics.items():
-        metric.reset_states()
+    total_results = {name: metric.result() for name, metric in metrics.items()}
+    # Results from Robustness Metrics themselves return a dict, so flatten them.
+    total_results = utils.flatten_dictionary(total_results)
+    with summary_writer.as_default():
+      for name, result in total_results.items():
+        tf.summary.scalar(name, result, step=epoch + 1)
 
-      if (FLAGS.checkpoint_interval > 0 and
-          (epoch + 1) % FLAGS.checkpoint_interval == 0):
-        checkpoint_name = checkpoint.save(
-            os.path.join(FLAGS.output_dir, 'checkpoint'))
-        logging.info('Saved checkpoint to %s', checkpoint_name)
+    for _, metric in metrics.items():
+      metric.reset_states()
+
+    if (FLAGS.checkpoint_interval > 0 and
+        (epoch + 1) % FLAGS.checkpoint_interval == 0):
+      checkpoint_name = checkpoint.save(
+          os.path.join(FLAGS.output_dir, 'checkpoint'))
+      logging.info('Saved checkpoint to %s', checkpoint_name)
 
   final_checkpoint_name = checkpoint.save(
       os.path.join(FLAGS.output_dir, 'checkpoint'))

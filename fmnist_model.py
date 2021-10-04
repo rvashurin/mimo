@@ -129,7 +129,7 @@ def simple_resnet(depth, width_multiplier, num_classes):
 
   x = BatchNormalization()(x)
   x = tf.keras.layers.Activation('relu')(x)
-  x = tf.keras.layers.AveragePooling2D(pool_size=6)(x)
+  x = tf.keras.layers.AveragePooling2D(pool_size=4)(x)
   x = tf.keras.layers.Flatten()(x)
   x = tf.keras.layers.Dense(num_classes, activation=None)(x)
 
