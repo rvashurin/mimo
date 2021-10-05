@@ -40,7 +40,7 @@ flags.DEFINE_integer('batch_repetitions', 1, 'Number of times an example is'
                      'repeated in a training batch. More repetitions lead to'
                      'lower variance gradients and increased training time.')
 flags.DEFINE_integer('seed', 0, 'Random seed.')
-flags.DEFINE_float('base_learning_rate', 0.05,
+flags.DEFINE_float('base_learning_rate', 0.01,
                    'Base learning rate when total training batch size is 128.')
 flags.DEFINE_integer(
     'lr_warmup_epochs', 0,
@@ -129,7 +129,7 @@ def main(argv):
 #        width_multiplier=1,
 #        num_classes=num_classes,
 #        ensemble_size=FLAGS.ensemble_size)
-    model = fmnist_model.simple_resnet(16, 1, num_classes)
+    model = fmnist_model.simple_resnet(28, 1, num_classes)
     logging.info('Model input shape: %s', model.input_shape)
     logging.info('Model output shape: %s', model.output_shape)
     logging.info('Model number of weights: %s', model.count_params())
@@ -145,7 +145,6 @@ def main(argv):
         warmup_epochs=FLAGS.lr_warmup_epochs)
     optimizer = tf.keras.optimizers.SGD(
         lr_schedule, momentum=0.9, nesterov=True)
-    optimizer = tf.keras.optimizers.SGD(base_lr)
     metrics = {
         'train/negative_log_likelihood': tf.keras.metrics.Mean(),
         'train/accuracy': tf.keras.metrics.SparseCategoricalAccuracy(),
@@ -337,7 +336,50 @@ def main(argv):
       os.path.join(FLAGS.output_dir, 'checkpoint'))
   logging.info('Saved last checkpoint to %s', final_checkpoint_name)
 
+def eval():
+  model = fmnist_model.simple_resnet(28, 1, num_classes)
+  optimizer = tf.keras.optimizers.SGD(
+    lr_schedule, momentum=0.9, nesterov=True)
+  checkpoint = tf.train.Checkpoint(model=model, optimizer=optimizer)
+  latest_checkpoint = tf.train.latest_checkpoint(FLAGS.output_dir)
+  if latest_checkpoint:
+    # checkpoint.restore must be within a strategy.scope() so that optimizer
+    # slot variables are mirrored.
+    checkpoint.restore(latest_checkpoint)
+    logging.info('Loaded checkpoint %s', latest_checkpoint)
+
+  builder = tfds.builder(FLAGS.dataset)
+  test_batch_size = FLAGS.per_core_batch_size * FLAGS.num_cores
+
+  test_dataset = builder.as_dataset(split='test')
+
+  test_dataset_size = train_dataset.cardinality().numpy()
+
+  steps_per_eval = test_dataset_size // test_batch_size
+
+  num_classes = ds_info.features['label'].num_classes
+
+  test_dataset = test_dataset.batch(test_batch_size)
+
+  test_datasets = {
+      'clean': test_dataset
+  }
+
+  logging.info('Testing on validation dataset')
+  for step, inputs in enumerate(test_dataset):
+    if step % 20 == 0:
+      logging.info('Starting to run text step %s', step)
+    test_start_time = time.time()
+    test_step(inputs)
+    ms_per_example = (time.time() - test_start_time) * 1e6 / test_batch_size
+    metrics['test/ms_per_example'].update_state(ms_per_example)
+  logging.info('Done with testing on test dataset')
+
+  logging.info('Test NLL: %.4f, Accuracy: %.2f%%',
+               metrics['test/negative_log_likelihood'].result(),
+               metrics['test/accuracy'].result() * 100)
+
+
 
 if __name__ == '__main__':
-  with tf.device('/device:gpu:0'):
-    app.run(main)
+  app.run(main)
