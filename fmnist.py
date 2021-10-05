@@ -40,10 +40,10 @@ flags.DEFINE_integer('batch_repetitions', 1, 'Number of times an example is'
                      'repeated in a training batch. More repetitions lead to'
                      'lower variance gradients and increased training time.')
 flags.DEFINE_integer('seed', 0, 'Random seed.')
-flags.DEFINE_float('base_learning_rate', 0.05,
+flags.DEFINE_float('base_learning_rate', 0.1,
                    'Base learning rate when total training batch size is 128.')
 flags.DEFINE_integer(
-    'lr_warmup_epochs', 0,
+    'lr_warmup_epochs', 1,
     'Number of epochs for a linear warmup to the initial '
     'learning rate. Use 0 to do no warmup.')
 flags.DEFINE_float('lr_decay_ratio', 0.2, 'Amount to decay learning rate.')
@@ -61,8 +61,9 @@ flags.DEFINE_string(
     'training/evaluation summaries are stored.')
 flags.DEFINE_integer('train_epochs', 250, 'Number of training epochs.')
 
-# Accelerator flags.
+# Accelerator flags
 flags.DEFINE_bool('use_gpu', True, 'Whether to run on GPU or otherwise TPU.')
+flags.DEFINE_bool('use_bfloat16', True, 'Whether to use mixed precision.')
 flags.DEFINE_integer('num_cores', 1, 'Number of TPU cores or number of GPUs.')
 flags.DEFINE_string('tpu', None,
                     'Name of the TPU. Only used if use_gpu is False.')
@@ -129,7 +130,7 @@ def main(argv):
 #        width_multiplier=1,
 #        num_classes=num_classes,
 #        ensemble_size=FLAGS.ensemble_size)
-    model = fmnist_model.simple_resnet(16, 1, num_classes)
+    model = fmnist_model.simple_resnet(22, 1, num_classes)
     logging.info('Model input shape: %s', model.input_shape)
     logging.info('Model output shape: %s', model.output_shape)
     logging.info('Model number of weights: %s', model.count_params())
@@ -145,7 +146,6 @@ def main(argv):
         warmup_epochs=FLAGS.lr_warmup_epochs)
     optimizer = tf.keras.optimizers.SGD(
         lr_schedule, momentum=0.9, nesterov=True)
-    optimizer = tf.keras.optimizers.SGD(base_lr)
     metrics = {
         'train/negative_log_likelihood': tf.keras.metrics.Mean(),
         'train/accuracy': tf.keras.metrics.SparseCategoricalAccuracy(),
@@ -274,6 +274,7 @@ def main(argv):
 
   start_time = time.time()
   datagen = ImageDataGenerator(rotation_range = 10, horizontal_flip = True, zoom_range = 0.1)
+  computed_steps = 0
 
   for epoch in range(FLAGS.train_epochs):
     logging.info('Starting to run epoch: %s', epoch)
@@ -284,13 +285,14 @@ def main(argv):
           train_step(_image, _label)
           break
 
+      computed_steps += 1
       max_steps = steps_per_epoch * (FLAGS.train_epochs)
       time_elapsed = time.time() - start_time
-      steps_per_sec = float(current_step) / time_elapsed
-      eta_seconds = (max_steps - current_step) / steps_per_sec
+      steps_per_sec = float(computed_steps) / time_elapsed
+      eta_seconds = (max_steps - computed_steps) / steps_per_sec
       message = ('{:.1%} completion: epoch {:d}/{:d}. {:.1f} steps/s. '
                  'ETA: {:.0f} min. Time elapsed: {:.0f} min'.format(
-                     current_step / max_steps, epoch + 1, FLAGS.train_epochs,
+                     computed_steps / max_steps, epoch + 1, FLAGS.train_epochs,
                      steps_per_sec, eta_seconds / 60, time_elapsed / 60))
       if current_step % 20 == 0:
         logging.info(message)
