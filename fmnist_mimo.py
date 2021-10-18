@@ -31,9 +31,7 @@ import utils
 import uncertainty_baselines as ub
 import uncertainty_metrics as um
 
-flags.DEFINE_integer('ensemble_size', 4, 'Size of ensemble.')
-flags.DEFINE_integer('width', 1, 'Width of base ResNet model')
-flags.DEFINE_integer('depth', 28, 'Depth of base ResNet model')
+flags.DEFINE_integer('ensemble_size', 3, 'Size of ensemble.')
 flags.DEFINE_float('input_repetition_probability', 0.0,
                    'The probability that the inputs are identical for the'
                    'ensemble members.')
@@ -59,7 +57,7 @@ flags.DEFINE_integer(
     'never save checkpoints.')
 flags.DEFINE_integer('num_bins', 15, 'Number of bins for ECE.')
 flags.DEFINE_string(
-    'output_dir', '/tmp/fmnist', 'The directory where the model weights and '
+        'output_dir', '/tmp/fmnist/deep_mimo', 'The directory where the model weights and '
     'training/evaluation summaries are stored.')
 flags.DEFINE_integer('train_epochs', 250, 'Number of training epochs.')
 
@@ -70,7 +68,6 @@ flags.DEFINE_integer('num_cores', 1, 'Number of TPU cores or number of GPUs.')
 flags.DEFINE_string('tpu', None,
                     'Name of the TPU. Only used if use_gpu is False.')
 FLAGS = flags.FLAGS
-
 
 def main(argv):
   del argv  # unused arg
@@ -90,7 +87,6 @@ def main(argv):
     strategy = tf.distribute.TPUStrategy(resolver)
 
   builder = tfds.builder(FLAGS.dataset)
-  builder.download_and_prepare()
   ds_info = builder.info
   # 64
   train_batch_size = FLAGS.per_core_batch_size * FLAGS.num_cores // FLAGS.batch_repetitions
@@ -101,7 +97,7 @@ def main(argv):
   # 10000
   val_dataset = train_dataset.skip(50000)
   # 50000
-  train_dataset = train_dataset.take(10000)
+  train_dataset = train_dataset.take(50000)
   # 10000
   test_dataset = builder.as_dataset(split='test')
 
@@ -124,141 +120,153 @@ def main(argv):
   summary_writer = tf.summary.create_file_writer(
       os.path.join(FLAGS.output_dir, 'summaries'))
 
-  logging.info('Building Keras model')
-  model = fmnist_model.multiheaded_resnet(
-      input_shape=[FLAGS.ensemble_size] +
-      list(ds_info.features['image'].shape),
-      depth=FLAGS.depth,
-      width_multiplier=FLAGS.width,
-      num_classes=num_classes,
-      ensemble_size=FLAGS.ensemble_size)
-  logging.info('Model input shape: %s', model.input_shape)
-  logging.info('Model output shape: %s', model.output_shape)
-  logging.info('Model number of weights: %s', model.count_params())
-  # Linearly scale learning rate and the decay epochs by vanilla settings.
-  base_lr = FLAGS.base_learning_rate * train_batch_size / 128
-  lr_decay_epochs = [(int(start_epoch_str) * FLAGS.train_epochs) // 200
-                     for start_epoch_str in FLAGS.lr_decay_epochs]
-  lr_schedule = ub.schedules.WarmUpPiecewiseConstantSchedule(
-      steps_per_epoch,
-      base_lr,
-      decay_ratio=FLAGS.lr_decay_ratio,
-      decay_epochs=lr_decay_epochs,
-      warmup_epochs=FLAGS.lr_warmup_epochs)
-  optimizer = tf.keras.optimizers.SGD(
-      lr_schedule, momentum=0.9, nesterov=True)
-  metrics = {
-      'train/negative_log_likelihood': tf.keras.metrics.Mean(),
-      'train/accuracy': tf.keras.metrics.SparseCategoricalAccuracy(),
-      'train/loss': tf.keras.metrics.Mean(),
-      'train/ece': um.ExpectedCalibrationError(num_bins=FLAGS.num_bins),
-      'test/negative_log_likelihood': tf.keras.metrics.Mean(),
-      'test/accuracy': tf.keras.metrics.SparseCategoricalAccuracy(),
-      'test/ece': um.ExpectedCalibrationError(num_bins=FLAGS.num_bins),
-      'test/diversity': rm.metrics.AveragePairwiseDiversity(),
-  }
+  with strategy.scope():
+    logging.info('Building Keras model')
+    model = fmnist_model.deep_multiheaded_resnet(
+        input_shape=[FLAGS.ensemble_size] +
+        list(ds_info.features['image'].shape),
+        depth=28,
+        width_multiplier=1,
+        num_classes=num_classes,
+        ensemble_size=FLAGS.ensemble_size)
+    logging.info('Model input shape: %s', model.input_shape)
+    logging.info('Model output shape: %s', model.output_shape)
+    logging.info('Model number of weights: %s', model.count_params())
+    # Linearly scale learning rate and the decay epochs by vanilla settings.
+    base_lr = FLAGS.base_learning_rate * train_batch_size / 128
+    lr_decay_epochs = [(int(start_epoch_str) * FLAGS.train_epochs) // 200
+                       for start_epoch_str in FLAGS.lr_decay_epochs]
+    lr_schedule = ub.schedules.WarmUpPiecewiseConstantSchedule(
+        steps_per_epoch,
+        base_lr,
+        decay_ratio=FLAGS.lr_decay_ratio,
+        decay_epochs=lr_decay_epochs,
+        warmup_epochs=FLAGS.lr_warmup_epochs)
+    optimizer = tf.keras.optimizers.SGD(
+        lr_schedule, momentum=0.9, nesterov=True)
+    metrics = {
+        'train/negative_log_likelihood': tf.keras.metrics.Mean(),
+        'train/accuracy': tf.keras.metrics.SparseCategoricalAccuracy(),
+        'train/loss': tf.keras.metrics.Mean(),
+        'train/ece': um.ExpectedCalibrationError(num_bins=FLAGS.num_bins),
+        'test/negative_log_likelihood': tf.keras.metrics.Mean(),
+        'test/accuracy': tf.keras.metrics.SparseCategoricalAccuracy(),
+        'test/ece': um.ExpectedCalibrationError(num_bins=FLAGS.num_bins),
+        'test/diversity': rm.metrics.AveragePairwiseDiversity(),
+    }
 
-  for i in range(FLAGS.ensemble_size):
-    metrics['test/nll_member_{}'.format(i)] = tf.keras.metrics.Mean()
-    metrics['test/accuracy_member_{}'.format(i)] = (
-        tf.keras.metrics.SparseCategoricalAccuracy())
+    for i in range(FLAGS.ensemble_size):
+      metrics['test/nll_member_{}'.format(i)] = tf.keras.metrics.Mean()
+      metrics['test/accuracy_member_{}'.format(i)] = (
+          tf.keras.metrics.SparseCategoricalAccuracy())
 
-  checkpoint = tf.train.Checkpoint(model=model, optimizer=optimizer)
-  latest_checkpoint = tf.train.latest_checkpoint(FLAGS.output_dir)
-  if latest_checkpoint:
-    # checkpoint.restore must be within a strategy.scope() so that optimizer
-    # slot variables are mirrored.
-    checkpoint.restore(latest_checkpoint)
-    logging.info('Loaded checkpoint %s', latest_checkpoint)
-    initial_epoch = optimizer.iterations.numpy() // steps_per_epoch
+    checkpoint = tf.train.Checkpoint(model=model, optimizer=optimizer)
+    latest_checkpoint = tf.train.latest_checkpoint(FLAGS.output_dir)
+    if latest_checkpoint:
+      # checkpoint.restore must be within a strategy.scope() so that optimizer
+      # slot variables are mirrored.
+      checkpoint.restore(latest_checkpoint)
+      logging.info('Loaded checkpoint %s', latest_checkpoint)
+      initial_epoch = optimizer.iterations.numpy() // steps_per_epoch
 
   @tf.function
   def train_step(images, labels):
     """Training StepFn."""
-    batch_size = tf.shape(images)[0]
 
-    main_shuffle = tf.random.shuffle(tf.tile(
-        tf.range(batch_size), [FLAGS.batch_repetitions]))
-    to_shuffle = tf.cast(tf.cast(tf.shape(main_shuffle)[0], tf.float32)
-                         * (1. - FLAGS.input_repetition_probability),
-                         tf.int32)
-    shuffle_indices = [
-        tf.concat([tf.random.shuffle(main_shuffle[:to_shuffle]),
-                   main_shuffle[to_shuffle:]], axis=0)
-        for _ in range(FLAGS.ensemble_size)]
-    images = tf.stack([tf.gather(images, indices, axis=0)
-                       for indices in shuffle_indices], axis=1)
-    labels = tf.stack([tf.gather(labels, indices, axis=0)
-                       for indices in shuffle_indices], axis=1)
+    def step_fn(images, labels):
+      """Per-Replica StepFn."""
+      batch_size = tf.shape(images)[0]
 
-    with tf.GradientTape() as tape:
-      logits = model(images, training=True)
-      negative_log_likelihood = tf.reduce_mean(tf.reduce_sum(
-          tf.keras.losses.sparse_categorical_crossentropy(
-              labels, logits, from_logits=True), axis=1))
+      main_shuffle = tf.random.shuffle(tf.tile(
+          tf.range(batch_size), [FLAGS.batch_repetitions]))
+      to_shuffle = tf.cast(tf.cast(tf.shape(main_shuffle)[0], tf.float32)
+                           * (1. - FLAGS.input_repetition_probability),
+                           tf.int32)
+      shuffle_indices = [
+          tf.concat([tf.random.shuffle(main_shuffle[:to_shuffle]),
+                     main_shuffle[to_shuffle:]], axis=0)
+          for _ in range(FLAGS.ensemble_size)]
+      images = tf.stack([tf.gather(images, indices, axis=0)
+                         for indices in shuffle_indices], axis=1)
+      labels = tf.stack([tf.gather(labels, indices, axis=0)
+                         for indices in shuffle_indices], axis=1)
+
+      with tf.GradientTape() as tape:
+        logits = model(images, training=True)
+        negative_log_likelihood = tf.reduce_mean(tf.reduce_sum(
+            tf.keras.losses.sparse_categorical_crossentropy(
+                labels, logits, from_logits=True), axis=1))
 #        negative_log_likelihood = tf.reduce_mean(
 #            tf.keras.losses.sparse_categorical_crossentropy(
 #                labels, logits, from_logits=True))
 
-      filtered_variables = []
-      for var in model.trainable_variables:
-        # Apply l2 on the BN parameters and bias terms.
-        if ('kernel' in var.name or 'batch_norm' in var.name or
-            'bias' in var.name):
-          filtered_variables.append(tf.reshape(var, (-1,)))
+        filtered_variables = []
+        for var in model.trainable_variables:
+          # Apply l2 on the BN parameters and bias terms.
+          if ('kernel' in var.name or 'batch_norm' in var.name or
+              'bias' in var.name):
+            filtered_variables.append(tf.reshape(var, (-1,)))
 
-      l2_loss = FLAGS.l2 * 2 * tf.nn.l2_loss(
-          tf.concat(filtered_variables, axis=0))
+        l2_loss = FLAGS.l2 * 2 * tf.nn.l2_loss(
+            tf.concat(filtered_variables, axis=0))
 
-      # Scale the loss given the TPUStrategy will reduce sum all gradients.
-      loss = negative_log_likelihood + l2_loss
-      scaled_loss = loss / strategy.num_replicas_in_sync
+        # Scale the loss given the TPUStrategy will reduce sum all gradients.
+        loss = negative_log_likelihood + l2_loss
+        scaled_loss = loss / strategy.num_replicas_in_sync
 
-    grads = tape.gradient(loss, model.trainable_variables)
-    optimizer.apply_gradients(zip(grads, model.trainable_variables))
+      grads = tape.gradient(scaled_loss, model.trainable_variables)
+      optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
-    probs = tf.nn.softmax(tf.reshape(logits, [-1, num_classes]))
-    flat_labels = tf.reshape(labels, [-1])
-    metrics['train/ece'].update_state(flat_labels, probs)
-    metrics['train/loss'].update_state(loss)
-    metrics['train/negative_log_likelihood'].update_state(
-        negative_log_likelihood)
-    metrics['train/accuracy'].update_state(flat_labels, probs)
+      probs = tf.nn.softmax(tf.reshape(logits, [-1, num_classes]))
+      flat_labels = tf.reshape(labels, [-1])
+      metrics['train/ece'].update_state(flat_labels, probs)
+      metrics['train/loss'].update_state(loss)
+      metrics['train/negative_log_likelihood'].update_state(
+          negative_log_likelihood)
+      metrics['train/accuracy'].update_state(flat_labels, probs)
+
+    strategy.run(step_fn, args=(images, labels))
 
   @tf.function
   def test_step(inputs):
     """Evaluation StepFn."""
-    images = inputs['image']
-    labels = inputs['label']
-    images = tf.tile(
-        tf.expand_dims(images, 1), [1, FLAGS.ensemble_size, 1, 1, 1])
-    logits = model(images, training=False)
-    probs = tf.nn.softmax(logits)
 
-    per_probs = tf.transpose(probs, perm=[1, 0, 2])
-    metrics['test/diversity'].add_batch(per_probs)
+    def step_fn(inputs):
+      """Per-Replica StepFn."""
+      images = inputs['image']
+      labels = inputs['label']
+      images = tf.tile(
+          tf.expand_dims(images, 1), [1, FLAGS.ensemble_size, 1, 1, 1])
+      logits = model(images, training=False)
+      probs = tf.nn.softmax(logits)
 
-    for i in range(FLAGS.ensemble_size):
-      member_probs = probs[:, i]
-      member_loss = tf.keras.losses.sparse_categorical_crossentropy(
-          labels, member_probs)
-      metrics['test/nll_member_{}'.format(i)].update_state(member_loss)
-      metrics['test/accuracy_member_{}'.format(i)].update_state(
-          labels, member_probs)
+      per_probs = tf.transpose(probs, perm=[1, 0, 2])
+      metrics['test/diversity'].add_batch(per_probs)
 
-    # Negative log marginal likelihood computed in a numerically-stable way.
-    labels_tiled = tf.tile(
-        tf.expand_dims(labels, 1), [1, FLAGS.ensemble_size])
-    log_likelihoods = -tf.keras.losses.sparse_categorical_crossentropy(
-        labels_tiled, logits, from_logits=True)
-    negative_log_likelihood = tf.reduce_mean(
-        -tf.reduce_logsumexp(log_likelihoods, axis=[1]) +
-        tf.math.log(float(FLAGS.ensemble_size)))
-    probs = tf.math.reduce_mean(probs, axis=1)  # marginalize
-    metrics['test/negative_log_likelihood'].update_state(
-        negative_log_likelihood)
-    metrics['test/accuracy'].update_state(labels, probs)
-    metrics['test/ece'].update_state(labels, probs)
+      for i in range(FLAGS.ensemble_size):
+        member_probs = probs[:, i]
+        member_loss = tf.keras.losses.sparse_categorical_crossentropy(
+            labels, member_probs)
+        metrics['test/nll_member_{}'.format(i)].update_state(member_loss)
+        metrics['test/accuracy_member_{}'.format(i)].update_state(
+            labels, member_probs)
+
+      # Negative log marginal likelihood computed in a numerically-stable way.
+      labels_tiled = tf.tile(
+          tf.expand_dims(labels, 1), [1, FLAGS.ensemble_size])
+      log_likelihoods = -tf.keras.losses.sparse_categorical_crossentropy(
+          labels_tiled, logits, from_logits=True)
+      negative_log_likelihood = tf.reduce_mean(
+          -tf.reduce_logsumexp(log_likelihoods, axis=[1]) +
+          tf.math.log(float(FLAGS.ensemble_size)))
+      probs = tf.math.reduce_mean(probs, axis=1)  # marginalize
+
+      metrics['test/negative_log_likelihood'].update_state(
+          negative_log_likelihood)
+      metrics['test/accuracy'].update_state(labels, probs)
+      metrics['test/ece'].update_state(labels, probs)
+
+    strategy.run(step_fn, args=((inputs),))
 
   metrics.update({'test/ms_per_example': tf.keras.metrics.Mean()})
 
@@ -274,7 +282,7 @@ def main(argv):
       for _image, _label in datagen.flow(image, label, batch_size = train_batch_size):
           train_step(_image, _label)
           break
-      train_step(image, label)
+
       computed_steps += 1
       max_steps = steps_per_epoch * (FLAGS.train_epochs)
       time_elapsed = time.time() - start_time
@@ -332,7 +340,13 @@ def main(argv):
 def eval(self):
   FLAGS = flags.FLAGS
   num_classes=10
-  model = fmnist_model.simple_resnet(28, 1, num_classes)
+  model = small_resnet(
+    input_shape=[FLAGS.ensemble_size] +
+    list(ds_info.features['image'].shape),
+    depth=28,
+    width_multiplier=FLAGS.width_multiplier,
+    num_classes=num_classes,
+    ensemble_size=FLAGS.ensemble_size)
   optimizer = tf.keras.optimizers.SGD(0.01)
   checkpoint = tf.train.Checkpoint(model=model, optimizer=optimizer)
   latest_checkpoint = tf.train.latest_checkpoint(FLAGS.output_dir)
@@ -387,5 +401,4 @@ def eval(self):
 
 
 if __name__ == '__main__':
-  with tf.device('/GPU:0'):
-    app.run(main)
+  app.run(main)

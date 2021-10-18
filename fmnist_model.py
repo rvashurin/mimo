@@ -57,7 +57,7 @@ def group(inputs, filters, strides, num_blocks, **kwargs):
   return x
 
 
-def small_resnet(input_shape, depth, width_multiplier, num_classes,
+def multiheaded_resnet(input_shape, depth, width_multiplier, num_classes,
                 ensemble_size):
   """Builds Wide ResNet with Sparse BatchEnsemble.
 
@@ -108,17 +108,72 @@ def small_resnet(input_shape, depth, width_multiplier, num_classes,
       ensemble_size=ensemble_size)(x)
   return tf.keras.Model(inputs=inputs, outputs=x)
 
+def deep_multiheaded_resnet(input_shape, depth, width_multiplier, num_classes,
+                ensemble_size):
+  """Builds Wide ResNet with Sparse BatchEnsemble.
+
+  Following Zagoruyko and Komodakis (2016), it accepts a width multiplier on the
+  number of filters. Using three groups of residual blocks, the network maps
+  spatial features of size 32x32 -> 16x16 -> 8x8.
+
+  Args:
+    input_shape: tf.Tensor. The input shape must be (ensemble_size, width,
+      height, channels).
+    depth: Total number of convolutional layers. "n" in WRN-n-k. It differs from
+      He et al. (2015)'s notation which uses the maximum depth of the network
+      counting non-conv layers like dense.
+    width_multiplier: Integer to multiply the number of typical filters by. "k"
+      in WRN-n-k.
+    num_classes: Number of output classes.
+    ensemble_size: Number of ensemble members.
+
+  Returns:
+    tf.keras.Model.
+  """
+  if (depth - 4) % 6 != 0:
+    raise ValueError('depth should be 6n+4 (e.g., 16, 22, 28, 40).')
+  num_blocks = (depth - 4) // 6
+  input_shape = list(input_shape)
+  inputs = tf.keras.layers.Input(shape=input_shape)
+  x = tf.keras.layers.Permute([2, 3, 4, 1])(inputs)
+  if ensemble_size != input_shape[0]:
+    raise ValueError('the first dimension of input_shape must be ensemble_size')
+  x = tf.keras.layers.Reshape(input_shape[1:-1] +
+                              [input_shape[-1] * ensemble_size])(x)
+  x = Conv2D(16, strides=1)(x)
+  for strides, filters in zip([1, 3, 1], [16, 32, 64]):
+    x = group(
+        x,
+        filters=filters * width_multiplier,
+        strides=strides,
+        num_blocks=num_blocks)
+
+  x = BatchNormalization()(x)
+  x = tf.keras.layers.Activation('relu')(x)
+  x = tf.keras.layers.AveragePooling2D(pool_size=6)(x)
+  x = tf.keras.layers.Flatten()(x)
+
+  x = tf.keras.layers.Dense(num_classes * ensemble_size, activation='relu')(x)
+  xs = {}
+  for i in range(ensemble_size):
+    start_idx = i * num_classes
+    end_idx = start_idx + num_classes
+    xs[i] = x[:, start_idx:end_idx]
+  for i in xs:
+      xs[i] = tf.keras.layers.Dense(num_classes, activation=None)(xs[i])
+  x = tf.keras.layers.concatenate([xs[i] for i in xs], axis=1)
+  batch_size = tf.shape(inputs)[0]
+  outputs = tf.reshape(x, [batch_size,
+                           ensemble_size,
+                           num_classes])
+
+  return tf.keras.Model(inputs=inputs, outputs=outputs)
+
 def simple_resnet(depth, width_multiplier, num_classes):
   if (depth - 4) % 6 != 0:
     raise ValueError('depth should be 6n+4 (e.g., 16, 22, 28, 40).')
   num_blocks = (depth - 4) // 6
-#  input_shape = list(input_shape)
   inputs = tf.keras.layers.Input(shape=(28, 28, 1))
-#  x = tf.keras.layers.Permute([2, 3, 4, 1])(inputs)
-#  if ensemble_size != input_shape[0]:
-#    raise ValueError('the first dimension of input_shape must be ensemble_size')
-#  x = tf.keras.layers.Reshape(input_shape[1:-1] +
-#                              [input_shape[-1] * ensemble_size])(x)
   x = Conv2D(16, strides=2)(inputs)
   for strides, filters in zip([1, 2, 2], [16, 32, 64]):
     x = group(

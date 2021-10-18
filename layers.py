@@ -68,7 +68,7 @@ class DenseMultihead(tf.keras.layers.Dense):
     return new_config
 
 class DoubleDenseMultihead(tf.keras.layers.Dense):
-  """Multiheaded dense + output layer"""
+  """Multihead layer that makes previous layer also a multihead"""
 
   def __init__(self,
                units,
