@@ -1,3 +1,11 @@
+# Fork info
+
+This is a playground for verifying results of and experimenting with MIMO lightweight ensembles.
+
+`reference` directory contains reference implementation of MIMO as described in the study.
+`custom` directory contains custom code for testing.
+`run_examples.sh` script is an entry point for testing MIMO with different combinations of weight, depth and ensemble size. `chmod +x run_examples.sh` before running.
+
 # Training independent subnetworks for robust prediction
 
 This directory contains the original scripts used for the paper's benchmark
