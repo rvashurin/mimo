@@ -12,7 +12,7 @@ do
     do
       dir="/gpfs/gpfs0/r.vashurin/runs/mimo/$depth/$width/$ens_size"
       mkdir -p $dir
-      python /trinity/home/r.vashurin/codebases/custom/fmnist.py --output_dir=$dir --dataset=fashion_mnist --width=$width --per_core_batch_size=129 --train_epochs=250 --l2=3e-4 --checkpoint_interval=250 --use_gpu=True --ensemble_size=$ens_size --base_learning_rate=0.01 --depth=$depth
+      python /trinity/home/r.vashurin/codebases/mimo/custom/fmnist.py --output_dir=$dir --dataset=fashion_mnist --width=$width --per_core_batch_size=129 --train_epochs=250 --l2=3e-4 --checkpoint_interval=250 --use_gpu=True --ensemble_size=$ens_size --base_learning_rate=0.01 --depth=$depth
     done
   done
 done
