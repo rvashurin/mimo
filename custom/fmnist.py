@@ -27,7 +27,7 @@ import fmnist_model  # local file import
 import robustness_metrics as rm
 import tensorflow as tf
 import tensorflow_datasets as tfds
-from .. import utils
+import utils
 import uncertainty_baselines as ub
 import uncertainty_metrics as um
 
