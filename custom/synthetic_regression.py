@@ -198,15 +198,14 @@ experiment_config = dict(
     n_epochs=2000,
     ens_sizes=(1,2,3,4,5))
 
-Xtest, ytest, ytest_pred, Xtest_wide, ytest_wide, ytest_wide_pred = run_mimo_experiments(**experiment_config)
+with tf.device('/GPU:1'):
+    Xtest, ytest, ytest_pred, Xtest_wide, ytest_wide, ytest_wide_pred = run_mimo_experiments(**experiment_config)
 
 # RMSE vs number of models in ens)
 
 ens_sizes = range(1,6)
 rmse = []
 std = []
-
-breakpoint()
 
 for ens_size in ens_sizes:
   rmses = []
