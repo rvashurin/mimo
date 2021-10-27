@@ -28,6 +28,7 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 import utils
 import uncertainty_metrics as um
+import uncertainty_baselines as ub
 
 flags.DEFINE_integer('ensemble_size', 4, 'Size of ensemble.')
 flags.DEFINE_integer('width', 1, 'Width of base ResNet model')
@@ -40,7 +41,7 @@ flags.DEFINE_integer('batch_repetitions', 4, 'Number of times an example is'
                      'repeated in a training batch. More repetitions lead to'
                      'lower variance gradients and increased training time.')
 flags.DEFINE_integer('seed', 0, 'Random seed.')
-flags.DEFINE_float('base_learning_rate', 0.1,
+flags.DEFINE_float('base_learning_rate', 0.01,
                    'Base learning rate when total training batch size is 128.')
 flags.DEFINE_integer(
     'lr_warmup_epochs', 1,
@@ -98,6 +99,7 @@ def main(argv):
     strategy = tf.distribute.TPUStrategy(resolver)
 
   ds_info = tfds.builder(FLAGS.dataset).info
+  tfds.builder(FLAGS.dataset).download_and_prepare()
   train_batch_size = FLAGS.per_core_batch_size * FLAGS.num_cores // FLAGS.batch_repetitions
   test_batch_size = FLAGS.per_core_batch_size * FLAGS.num_cores
   train_dataset_size = ds_info.splits['train'].num_examples
@@ -213,7 +215,8 @@ def main(argv):
 
     def step_fn(inputs):
       """Per-Replica StepFn."""
-      images, labels = inputs
+      images = inputs['features']
+      labels = inputs['labels']
       batch_size = tf.shape(images)[0]
 
       main_shuffle = tf.random.shuffle(tf.tile(
@@ -271,7 +274,9 @@ def main(argv):
 
     def step_fn(inputs):
       """Per-Replica StepFn."""
-      images, labels = inputs
+      images = inputs['features']
+      labels = inputs['labels']
+
       images = tf.tile(
           tf.expand_dims(images, 1), [1, FLAGS.ensemble_size, 1, 1, 1])
       logits = model(images, training=False)
