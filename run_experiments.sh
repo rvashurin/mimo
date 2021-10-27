@@ -1,7 +1,7 @@
 #!/bin/bash
 
 DEPTH=(28)
-WIDTH=(10)
+WIDTH=(1)
 NUM=(1 2 3 5 7 9 12 15)
 
 conda activate mimo

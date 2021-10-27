@@ -89,7 +89,7 @@ def main(argv):
 
   if FLAGS.use_gpu:
     logging.info('Use GPU')
-    strategy = tf.distribute.MirroredStrategy()
+    strategy = tf.distribute.OneDeviceStrategy(device="/gpu:0")
   else:
     logging.info('Use TPU at %s',
                  FLAGS.tpu if FLAGS.tpu is not None else 'local')
@@ -182,8 +182,9 @@ def main(argv):
         'test/ece': um.ExpectedCalibrationError(num_bins=FLAGS.num_bins),
         'test/diversity': rm.metrics.AveragePairwiseDiversity(),
     }
+
+    corrupt_metrics = {}
     if FLAGS.corruptions_interval > 0:
-      corrupt_metrics = {}
       for intensity in range(1, max_intensity + 1):
         for corruption in corruption_types:
           dataset_name = '{0}_{1}'.format(corruption, intensity)
@@ -403,4 +404,5 @@ def main(argv):
 
 
 if __name__ == '__main__':
-  app.run(main)
+  with tf.device('/GPU:0'):
+    app.run(main)
