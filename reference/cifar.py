@@ -30,11 +30,11 @@ import utils
 import uncertainty_metrics as um
 
 flags.DEFINE_integer('ensemble_size', 4, 'Size of ensemble.')
+flags.DEFINE_integer('width', 1, 'Width of base ResNet model')
+flags.DEFINE_integer('depth', 28, 'Depth of base ResNet model')
 flags.DEFINE_float('input_repetition_probability', 0.0,
                    'The probability that the inputs are identical for the'
                    'ensemble members.')
-flags.DEFINE_integer('width_multiplier', 10, 'Integer to multiply the number of'
-                     'typical filters by. "k" in ResNet-n-k.')
 flags.DEFINE_integer('per_core_batch_size', 64, 'Batch size per TPU core/GPU.')
 flags.DEFINE_integer('batch_repetitions', 4, 'Number of times an example is'
                      'repeated in a training batch. More repetitions lead to'
@@ -58,11 +58,11 @@ flags.DEFINE_string(
     'Path to the TFRecords files for CIFAR-100-C. Only valid '
     '(and required) if dataset is cifar100 and corruptions.')
 flags.DEFINE_integer(
-    'corruptions_interval', 250,
+    'corruptions_interval', -1,
     'Number of epochs between evaluating on the corrupted '
     'test data. Use -1 to never evaluate.')
 flags.DEFINE_integer(
-    'checkpoint_interval', -1,
+    'checkpoint_interval', 250,
     'Number of epochs between saving checkpoints. Use -1 to '
     'never save checkpoints.')
 flags.DEFINE_integer('num_bins', 15, 'Number of bins for ECE.')
@@ -72,9 +72,9 @@ flags.DEFINE_string(
 flags.DEFINE_integer('train_epochs', 250, 'Number of training epochs.')
 
 # Accelerator flags.
-flags.DEFINE_bool('use_gpu', False, 'Whether to run on GPU or otherwise TPU.')
+flags.DEFINE_bool('use_gpu', True, 'Whether to run on GPU or otherwise TPU.')
 flags.DEFINE_bool('use_bfloat16', False, 'Whether to use mixed precision.')
-flags.DEFINE_integer('num_cores', 8, 'Number of TPU cores or number of GPUs.')
+flags.DEFINE_integer('num_cores', 1, 'Number of TPU cores or number of GPUs.')
 flags.DEFINE_string('tpu', None,
                     'Name of the TPU. Only used if use_gpu is False.')
 FLAGS = flags.FLAGS
@@ -151,8 +151,8 @@ def main(argv):
     model = cifar_model.wide_resnet(
         input_shape=[FLAGS.ensemble_size] +
         list(ds_info.features['image'].shape),
-        depth=28,
-        width_multiplier=FLAGS.width_multiplier,
+        depth=FLAGS.depth,
+        width_multiplier=FLAGS.width,
         num_classes=num_classes,
         ensemble_size=FLAGS.ensemble_size)
     logging.info('Model input shape: %s', model.input_shape)
