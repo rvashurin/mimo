@@ -80,7 +80,7 @@ def main(argv):
 
   if FLAGS.use_gpu:
     logging.info('Use GPU')
-    strategy = tf.distribute.MirroredStrategy()
+    strategy = tf.distribute.OneDeviceStrategy(device="/gpu:0")
   else:
     logging.info('Use TPU at %s',
                  FLAGS.tpu if FLAGS.tpu is not None else 'local')
@@ -263,7 +263,7 @@ def main(argv):
   metrics.update({'test/ms_per_example': tf.keras.metrics.Mean()})
 
   start_time = time.time()
-  datagen = ImageDataGenerator(rotation_range = 10, horizontal_flip = True, zoom_range = 0.1)
+  datagen = ImageDataGenerator(horizontal_flip = True)
   computed_steps = 0
 
   for epoch in range(FLAGS.train_epochs):

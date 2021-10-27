@@ -140,28 +140,20 @@ def run_mimo_experiments(architecture=(32, 128), ens_sizes=(1, 2, 3, 4, 5),
   # Create testing data.
   Xtest0, ytest, Xtest, _ = create_data(n_test, data_dim=data_dim,
                                    data_noise=data_noise, support=(-1.,1.))
-  Xtest0_wide, ytest_wide, Xtest_wide, _ = create_data(n_test, data_dim=data_dim,
-                                             data_noise=data_noise, support=(-2.,2.))
+  _, y, X, training_set = create_data(n_train, data_dim=data_dim,
+                                      data_noise=data_noise, batch_size=batch_size)
 
   # Train MIMO models with different ensemble sizes over multiple random seeds.
-  ytest_pred = {}
-  ytest_wide_pred = {}
+  ytest_rmse = {}
 
   for rep in range(num_reps):
     print('Repetition', rep)
 
-    _, y, X, training_set = create_data(n_train, data_dim=data_dim,
-                                        data_noise=data_noise, batch_size=batch_size)
-
-    ytest_pred[rep] = {}
-    ytest_wide_pred[rep] = {}
+    ytest_rmse[rep] = {}
 
     for ens_size_id in trange(len(ens_sizes)):
       # Specified ensemble size.
       ens_size = ens_sizes[ens_size_id]
-
-      ytest_pred[rep][ens_size] = {}
-      ytest_wide_pred[rep][ens_size] = {}
 
       # Train a MIMO model.
       optimizer = tf.keras.optimizers.Adam(lr)
@@ -178,51 +170,57 @@ def run_mimo_experiments(architecture=(32, 128), ens_sizes=(1, 2, 3, 4, 5),
         if print_epoch > 0 and epoch % print_epoch == 0:
           print('[{:4d}] train sq. loss {:0.3f}'.format(epoch, np.mean(sq_loss)))
 
-        if epoch % eval_epoch == 0:
+        if epoch == n_epochs - 1:
           # Save testing performance.
           per_ens_member_ytest_pred = mimo_mlp(tf.tile(Xtest, (1, ens_size)))
-          ytest_pred[rep][ens_size][epoch] = per_ens_member_ytest_pred
+          diff = ytest - per_ens_member_ytest_pred
+          rmse = math.sqrt(np.mean(diff ** 2))
+          ytest_rmse[rep][ens_size] = rmse
 
-          per_ens_member_ytest_wide_pred = mimo_mlp(tf.tile(Xtest_wide, (1, ens_size)))
-          ytest_wide_pred[rep][ens_size][epoch] = per_ens_member_ytest_wide_pred
-
-  return Xtest0, ytest, ytest_pred, Xtest0_wide, ytest_wide, ytest_wide_pred
-
-experiment_config = dict(
-    data_dim=1,
-    architecture=(32, 128),
-    n_train=64,
-    n_test=3000,
-    num_reps=20,
-    lr=0.01,
-    n_epochs=2000,
-    ens_sizes=(1,2,3,4,5))
+  return ytest_rmse
 
 with tf.device('/GPU:1'):
-    Xtest, ytest, ytest_pred, Xtest_wide, ytest_wide, ytest_wide_pred = run_mimo_experiments(**experiment_config)
+    num_reps = 1000
+    experiment_config = dict(
+        data_dim=1,
+        architecture=(32, 128),
+        n_train=64,
+        n_test=3000,
+        num_reps=num_reps,
+        lr=0.01,
+        n_epochs=2000,
+        ens_sizes=(1,2,3,4,5))
 
-# RMSE vs number of models in ens)
+    ytest_rmses = run_mimo_experiments(**experiment_config)
 
-ens_sizes = range(1,6)
-rmse = []
-std = []
+    # RMSE vs number of models in ens)
 
-for ens_size in ens_sizes:
-  rmses = []
-  for i in range(len(ytest_pred.keys())):
-    diff = ytest - ytest_pred[i][ens_size][2000]
-    rmses.append(math.sqrt(np.mean(diff ** 2)))
-  if ens_size == 1:
-    print(min(rmses))
-    print(max(rmses))
-  rmse.append(np.mean(rmses))
-  std.append(np.std(rmses))
+    ens_sizes = range(1,6)
+    rmse = []
+    std = []
+    sem = []
 
-rmse = np.array(rmse)
-std = np.array(std)
+    for ens_size in ens_sizes:
+      rmses = []
+      for i in range(len(ytest_rmses.keys())):
+        rmses.append(ytest_rmses[i][ens_size])
+      rmse.append(np.mean(rmses))
+      ens_std = np.std(rmses)
+      std.append(ens_std)
+      sem.append(ens_std / math.sqrt(num_reps))
 
-plt.plot(ens_sizes, rmse)
-plt.fill_between(ens_sizes, rmse-std, rmse+std)
-plt.ylabel('RMSE')
-plt.xlabel('Ensemble size')
-plt.savefig('synthetic_results.png')
+    rmse = np.array(rmse)
+    std = np.array(std)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2)
+    ax1.plot(ens_sizes, rmse)
+    ax1.fill_between(ens_sizes, rmse-std, rmse+std, alpha=0.3)
+    ax1.set_title('STD')
+    ax1.set_ylabel('RMSE')
+    ax1.set_xlabel('Ensemble size')
+    ax2.plot(ens_sizes, rmse)
+    ax2.fill_between(ens_sizes, rmse-sem, rmse+sem, alpha=0.3)
+    ax2.set_title('SEM')
+    ax2.set_ylabel('RMSE')
+    ax2.set_xlabel('Ensemble size')
+    plt.savefig('synthetic_results.png')
